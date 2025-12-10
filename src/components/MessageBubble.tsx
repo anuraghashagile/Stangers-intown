@@ -44,7 +44,8 @@ const AudioPlayer = ({ src, isMe }: { src: string, isMe: boolean }) => {
     };
   }, []);
 
-  const togglePlay = () => {
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!audioRef.current) return;
     if (isPlaying) {
       audioRef.current.pause();
@@ -61,50 +62,50 @@ const AudioPlayer = ({ src, isMe }: { src: string, isMe: boolean }) => {
   };
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 min-w-[200px]">
+    <div className="flex items-center gap-3 px-3 py-3 min-w-[220px]">
       <audio ref={audioRef} src={src} />
       <button 
         onClick={togglePlay}
         className={clsx(
-          "w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-colors",
-          isMe ? "bg-white text-brand-600 hover:bg-slate-100" : "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
+          "w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-all hover:scale-105 active:scale-95 shadow-sm",
+          isMe ? "bg-white text-brand-600" : "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
         )}
       >
-        {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
+        {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
       </button>
       
       <div className="flex flex-col flex-1 gap-1.5">
-         {/* Waveform Animation */}
-         <div className="flex items-end gap-[2px] h-8 cursor-pointer" onClick={togglePlay}>
-            {[...Array(24)].map((_, i) => (
+         {/* Enhanced Waveform Animation */}
+         <div className="flex items-end gap-[3px] h-8 cursor-pointer" onClick={togglePlay}>
+            {[...Array(20)].map((_, i) => (
                <div 
                  key={i} 
                  className={clsx(
-                   "w-1 rounded-full transition-all duration-300",
-                   isPlaying ? "animate-wave" : "h-2",
-                   isMe ? "bg-white/70" : "bg-slate-400 dark:bg-slate-500",
-                   i % 2 === 0 ? "h-3" : "h-5" // varied initial heights
+                   "w-1.5 rounded-full transition-all duration-300",
+                   isPlaying ? "animate-wave" : "h-1.5",
+                   isMe ? "bg-white/80" : "bg-brand-400 dark:bg-brand-500",
+                   !isPlaying && (i % 2 === 0 ? "opacity-40" : "opacity-60")
                  )}
                  style={{
-                    height: isPlaying ? undefined : (4 + Math.random() * 16) + 'px',
-                    animationDelay: `${i * 0.04}s`,
-                    opacity: (i / 24) * (currentTime / duration) > (i/24) ? 1 : 0.4 // Progress simulation
+                    height: isPlaying ? undefined : (4 + Math.random() * 10) + 'px',
+                    animationDelay: `${i * 0.05}s`,
+                    opacity: isPlaying ? 1 : 0.5
                  }}
                />
             ))}
          </div>
-         <div className={clsx("text-[10px] font-mono font-medium", isMe ? "text-brand-100" : "text-slate-500")}>
+         <div className={clsx("text-[10px] font-mono font-bold tracking-wide", isMe ? "text-brand-100" : "text-slate-400")}>
             {formatTime(currentTime)} / {formatTime(duration || 0)}
          </div>
       </div>
       
       <style>{`
         @keyframes wave {
-          0%, 100% { height: 6px; }
-          50% { height: 24px; }
+          0%, 100% { height: 6px; transform: scaleY(0.5); }
+          50% { height: 28px; transform: scaleY(1.2); }
         }
         .animate-wave {
-          animation: wave 0.8s ease-in-out infinite;
+          animation: wave 1s ease-in-out infinite;
         }
       `}</style>
     </div>
@@ -165,7 +166,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     }
   };
 
-  // Format timestamp using user's local timezone and preference
   const formatTime = (timestamp: number) => {
     try {
       return new Date(timestamp).toLocaleTimeString(undefined, {
@@ -178,7 +178,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     }
   };
 
-  // Entry animation based on sender
   const entryAnimation = isMe 
     ? "animate-in slide-in-from-right-10 fade-in duration-300" 
     : "animate-in slide-in-from-left-10 fade-in duration-300";
@@ -186,7 +185,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   return (
     <div className={clsx("flex w-full mb-6 group relative", isMe ? "justify-end" : "justify-start", entryAnimation)}>
       
-      {/* Fixed Overlay Reaction Picker - Ensures visibility on all devices */}
       {showPicker && (
         <>
           <div 
@@ -221,7 +219,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         </div>
         
         <div className="relative group/bubble">
-          {/* Edit Button (Desktop Hover) */}
           {isMe && message.type === 'text' && onEdit && (
              <button 
                onClick={handleEditClick}
@@ -240,12 +237,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             className={clsx(
               "rounded-2xl shadow-sm relative transition-all overflow-visible select-none active:scale-[0.98]",
               isMe 
-                ? "bg-brand-50 dark:bg-brand-600 text-slate-900 dark:text-white rounded-tr-none border border-brand-100 dark:border-brand-500" 
+                ? "bg-brand-500 dark:bg-brand-600 text-slate-900 dark:text-white rounded-tr-none border border-brand-400 dark:border-brand-500" 
                 : "bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-tl-none border border-slate-200 dark:border-slate-700"
             )}
           >
             {message.type === 'text' && (
-              <div className={clsx("px-5 py-3 leading-relaxed break-words whitespace-pre-wrap relative text-[15px]")}>
+              <div className={clsx("px-5 py-3 leading-relaxed break-words whitespace-pre-wrap relative text-[15px]", isMe ? "text-white" : "text-slate-900 dark:text-slate-100")}>
                 {message.text}
                 {message.isEdited && (
                   <span className="text-[10px] text-slate-400 dark:text-slate-300 italic ml-2 opacity-70">
@@ -269,7 +266,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
               <AudioPlayer src={message.fileData} isMe={isMe} />
             )}
 
-            {/* Reactions Display */}
             {message.reactions && message.reactions.length > 0 && (
               <div className={clsx(
                 "absolute -bottom-4 flex gap-1",
@@ -285,7 +281,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           </div>
         </div>
         
-        {/* Actions (Only for stranger messages, visualized for demo) */}
         {!isMe && (
            <div className="flex gap-2 mt-2 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity px-1">
               <button 
@@ -301,7 +296,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             {formatTime(message.timestamp)}
             {isMe && (
               <>
-                 {message.status === 'seen' && <CheckCheck size={14} className="text-red-500" strokeWidth={2} />}
+                 {message.status === 'seen' && <CheckCheck size={14} className="text-emerald-400" strokeWidth={2} />}
                  {message.status !== 'seen' && <Check size={14} className="text-slate-400 dark:text-slate-500" strokeWidth={2} />}
               </>
             )}

@@ -5,25 +5,40 @@ import { Message, UserProfile } from '../types';
 
 export const useGlobalChat = (userProfile: UserProfile | null, myPeerId: string | null) => {
   const [globalMessages, setGlobalMessages] = useState<Message[]>([]);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load persistent history on mount
+  // Load persistent history on mount with retry
   useEffect(() => {
-    const loadHistory = async () => {
+    let mounted = true;
+    
+    const loadHistory = async (attempt = 1) => {
       try {
         const history = await fetchRecentGlobalMessages();
-        // Mark my own messages
-        const processed = history.map(msg => ({
-          ...msg,
-          sender: (msg.senderPeerId === myPeerId ? 'me' : 'stranger') as 'me' | 'stranger'
-        }));
-        
-        // Use functional update to merge/set and avoid race conditions
-        setGlobalMessages(processed);
+        if (mounted) {
+          // Mark my own messages based on persistent peer ID
+          const processed = history.map(msg => ({
+            ...msg,
+            sender: (msg.senderPeerId === myPeerId ? 'me' : 'stranger') as 'me' | 'stranger'
+          }));
+          
+          setGlobalMessages(processed);
+        }
       } catch (err) {
-        console.error("Failed to load global chat history", err);
+        console.error(`Failed to load global chat history (Attempt ${attempt})`, err);
+        if (attempt < 3 && mounted) {
+           retryTimeoutRef.current = setTimeout(() => loadHistory(attempt + 1), 2000);
+        }
       }
     };
-    loadHistory();
+    
+    if (myPeerId) {
+      loadHistory();
+    }
+
+    return () => {
+      mounted = false;
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    };
   }, [myPeerId]);
 
   // Subscribe to new DB inserts (Realtime)
@@ -52,7 +67,11 @@ export const useGlobalChat = (userProfile: UserProfile | null, myPeerId: string 
           });
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Connected to Global Chat DB Stream');
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -81,6 +100,7 @@ export const useGlobalChat = (userProfile: UserProfile | null, myPeerId: string 
        await sendPersistentGlobalMessage(newMessage);
     } catch (err) {
        console.error("Failed to send global message to DB", err);
+       // Optional: Revert optimistic update here if needed
     }
   }, [userProfile, myPeerId]);
 
