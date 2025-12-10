@@ -621,7 +621,13 @@ export const SocialHub: React.FC<SocialHubProps> = ({
                          {globalMessages.map(msg => (
                            <div key={msg.id} className={clsx("flex flex-col", msg.sender === 'me' ? "items-end" : "items-start")}>
                               <div className={clsx("px-3 py-2 rounded-2xl text-sm max-w-[85%] break-words shadow-sm", msg.sender === 'me' ? "bg-brand-500 text-white rounded-tr-sm" : "bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-tl-sm")}>
-                                 <button onClick={() => { if (msg.sender !== 'me' && msg.senderPeerId && msg.senderProfile) setViewingProfile({ id: msg.senderPeerId, profile: msg.senderProfile }); }} className={clsx("text-[10px] block font-bold mb-0.5", msg.sender === 'me' ? "text-brand-100 cursor-default" : "text-brand-500 hover:underline cursor-pointer")}>{msg.sender === 'me' ? 'You' : msg.senderName}</button>
+                                 <button 
+                                   onClick={() => { if (msg.sender !== 'me' && msg.senderPeerId && msg.senderProfile) setViewingProfile({ id: msg.senderPeerId, profile: msg.senderProfile }); }} 
+                                   className={clsx("text-[10px] block font-bold mb-0.5", msg.sender === 'me' ? "text-brand-100 cursor-default" : "text-brand-500 hover:underline cursor-pointer")}
+                                   disabled={msg.sender === 'me' || !msg.senderProfile}
+                                 >
+                                    {msg.sender === 'me' ? 'You' : (msg.senderName || 'Stranger')}
+                                 </button>
                                  {msg.text}
                               </div>
                            </div>

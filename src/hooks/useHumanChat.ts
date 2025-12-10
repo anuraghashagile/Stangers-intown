@@ -8,7 +8,6 @@ import {
   ICE_SERVERS
 } from '../constants';
 
-// Define RealtimeChannel type from supabase instance return type since it's not exported from the module in some versions
 type RealtimeChannel = ReturnType<typeof supabase.channel>;
 
 const MATCHMAKING_CHANNEL = 'global-lobby-v1';
@@ -40,14 +39,12 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
   
   // --- REFS ---
   const peerRef = useRef<Peer | null>(null);
-  
-  // Connection Refs
-  const mainConnRef = useRef<DataConnection | null>(null); // For Random/Main Chat
-  const directConnsRef = useRef<Map<string, DataConnection>>(new Map()); // For Social Hub Chats (Map<peerId, Connection>)
-
+  const mainConnRef = useRef<DataConnection | null>(null); 
+  const directConnsRef = useRef<Map<string, DataConnection>>(new Map()); 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const myPeerIdRef = useRef<string | null>(null);
   const isMatchmakerRef = useRef(false);
+  const processedMessageIds = useRef<Set<string>>(new Set());
   
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -56,10 +53,8 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
   // --- 1. INITIALIZE PEER (PERSISTENT) ---
   useEffect(() => {
     if (!userProfile) return;
-
     if (peerRef.current && !peerRef.current.destroyed) return;
 
-    // HIGH PERFORMANCE CONFIG
     const peerConfig = { 
       debug: 1, 
       config: { 
@@ -68,6 +63,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
       } 
     };
     
+    // Use persistentId to ensure ID stability across refreshes
     const peer = persistentId 
       ? new Peer(persistentId, peerConfig)
       : new Peer(peerConfig);
@@ -87,24 +83,18 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
 
     peer.on('error', (err: any) => {
       console.error("Peer Error:", err);
-      // Auto-recover from disconnects
-      if (err.type === 'disconnected' || err.type === 'network' || err.type === 'server-error') {
+      if (err.type === 'unavailable-id') {
+         // ID taken (e.g. open in another tab). Fallback to random ID
+         console.warn("ID taken, falling back to random");
+         peerRef.current = new Peer(peerConfig);
+      }
+      else if (err.type === 'disconnected' || err.type === 'network' || err.type === 'server-error') {
          setTimeout(() => peer.reconnect(), 1000);
       }
-      if (err.type === 'peer-unavailable' && isMatchmakerRef.current) {
-         isMatchmakerRef.current = false;
-         if (status === ChatMode.SEARCHING) {
-            setTimeout(() => setStatus(ChatMode.SEARCHING), 1000); 
-         }
-      }
     });
+  }, [userProfile, persistentId]);
 
-    return () => {
-      // Keep peer alive unless full unmount
-    };
-  }, [userProfile, persistentId, status]);
-
-  // --- 1.5 HEARTBEAT FOR PEERJS ---
+  // --- 1.5 HEARTBEAT ---
   useEffect(() => {
     const heartbeat = setInterval(() => {
        if (peerRef.current && peerRef.current.disconnected && !peerRef.current.destroyed) {
@@ -114,57 +104,50 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
     return () => clearInterval(heartbeat);
   }, []);
 
-  // --- 2. POLL FOR OFFLINE MESSAGES ---
+  // --- 2. OFFLINE MESSAGES POLLING & REALTIME ---
   useEffect(() => {
     if (!myPeerId) return;
+
+    const processOfflineMessage = async (msg: any) => {
+       if (processedMessageIds.current.has(msg.message_id)) return;
+       processedMessageIds.current.add(msg.message_id);
+
+       const reconstructed: Message = {
+         id: msg.message_id,
+         text: msg.content,
+         fileData: msg.file_data,
+         type: msg.type as any,
+         sender: 'stranger',
+         timestamp: new Date(msg.created_at).getTime(),
+         status: 'sent'
+       };
+       
+       setIncomingDirectMessage({ peerId: msg.sender_id, message: reconstructed });
+       
+       // Mark read in DB
+       await markMessageAsRead(msg.message_id);
+    };
 
     const checkOffline = async () => {
       const messages = await fetchOfflineMessages(myPeerId);
       if (messages && messages.length > 0) {
-        // SEQUENTIAL PROCESSING with delay to ensure React state updates are captured
         for (const msg of messages) {
-           const reconstructed: Message = {
-             id: msg.message_id,
-             text: msg.content,
-             fileData: msg.file_data,
-             type: msg.type as any,
-             sender: 'stranger',
-             timestamp: new Date(msg.created_at).getTime(),
-             status: 'sent'
-           };
-           // Inject into direct message flow
-           setIncomingDirectMessage({ peerId: msg.sender_id, message: reconstructed });
-           await markMessageAsRead(msg.message_id);
-           // Crucial delay to prevent batching
-           await new Promise(r => setTimeout(r, 150));
+           await processOfflineMessage(msg);
+           // INCREASED DELAY to prevent state batching issues in React
+           await new Promise(r => setTimeout(r, 200));
         }
       }
     };
 
-    // Initial check
     checkOffline();
+    const interval = setInterval(checkOffline, 15000); // Check every 15s
 
-    // Periodic Check (Fallback)
-    const interval = setInterval(checkOffline, 30000);
-
-    // Subscribe to DB changes for real-time offline delivery
-    const sub = supabase.channel('offline-msgs')
+    const sub = supabase.channel(`offline-${myPeerId}`)
       .on(
         'postgres_changes', 
         { event: 'INSERT', schema: 'public', table: 'direct_messages', filter: `receiver_id=eq.${myPeerId}` },
         async (payload) => {
-           const msg = payload.new;
-           const reconstructed: Message = {
-             id: msg.message_id,
-             text: msg.content,
-             fileData: msg.file_data,
-             type: msg.type as any,
-             sender: 'stranger',
-             timestamp: new Date(msg.created_at).getTime(),
-             status: 'sent'
-           };
-           setIncomingDirectMessage({ peerId: msg.sender_id, message: reconstructed });
-           await markMessageAsRead(msg.message_id);
+           await processOfflineMessage(payload.new);
         }
       ).subscribe();
 
@@ -208,12 +191,9 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
     };
   }, [userProfile, myPeerId]);
 
-
   // --- MATCHMAKING LOGIC ---
   useEffect(() => {
-    if (status !== ChatMode.SEARCHING || !myPeerId || !channelRef.current || isMatchmakerRef.current || mainConnRef.current) {
-      return;
-    }
+    if (status !== ChatMode.SEARCHING || !myPeerId || !channelRef.current || isMatchmakerRef.current || mainConnRef.current) return;
 
     const interval = setInterval(() => {
       if (status !== ChatMode.SEARCHING || isMatchmakerRef.current || mainConnRef.current) return;
@@ -224,43 +204,27 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
 
       if (waiters.length > 0) {
         const target = waiters[0];
-        console.log("Attempting match with:", target.peerId);
-        
         isMatchmakerRef.current = true;
         try {
-          const conn = peerRef.current?.connect(target.peerId, { 
-            reliable: true,
-            metadata: { type: 'random' } 
-          });
-          
+          const conn = peerRef.current?.connect(target.peerId, { reliable: true, metadata: { type: 'random' } });
           if (conn) {
             setupConnection(conn, { type: 'random' });
-            
-            // Safety timeout
-            if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
             connectionTimeoutRef.current = setTimeout(() => {
               if (isMatchmakerRef.current && (!mainConnRef.current || !mainConnRef.current.open)) {
-                console.log("Connection attempt timed out. Retrying...");
                 isMatchmakerRef.current = false;
                 mainConnRef.current = null;
               }
             }, 5000);
-          } else {
-             isMatchmakerRef.current = false;
-          }
-        } catch (e) {
-          console.error("Match connection failed", e);
-          isMatchmakerRef.current = false;
-        }
+          } else { isMatchmakerRef.current = false; }
+        } catch (e) { isMatchmakerRef.current = false; }
       }
-    }, 2000); // Check every 2s
+    }, 2000);
 
     return () => clearInterval(interval);
-
   }, [status, onlineUsers, myPeerId]);
 
 
-  // --- LOAD FRIENDS & RECENTS ---
+  // --- LOAD/SAVE FRIENDS ---
   useEffect(() => {
     const loadData = () => {
       try {
@@ -271,15 +235,12 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
     loadData();
   }, []);
 
-
-  // --- SAVE FRIEND ---
   const saveFriend = useCallback((profile: UserProfile, peerId: string) => {
     const key = 'chat_friends';
     try {
       const existing = localStorage.getItem(key);
       let friendList: Friend[] = existing ? JSON.parse(existing) : [];
       if (friendList.some(f => f.id === peerId)) return;
-
       const newFriend: Friend = { id: peerId, profile, addedAt: Date.now(), lastSeen: Date.now() };
       friendList.unshift(newFriend);
       localStorage.setItem(key, JSON.stringify(friendList));
@@ -311,57 +272,32 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
     } catch (e) {}
   }, []);
 
-
-  // --- CLEANUP MAIN CHAT ---
   const cleanupMain = useCallback(() => {
     if (mainConnRef.current) {
       try { mainConnRef.current.send({ type: 'disconnect' }); } catch(e) {}
-      setTimeout(() => {
-         try { mainConnRef.current?.close(); } catch (e) {}
-         mainConnRef.current = null;
-      }, 100);
-    } else {
-       mainConnRef.current = null;
-    }
-
-    if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+      setTimeout(() => { try { mainConnRef.current?.close(); } catch (e) {} mainConnRef.current = null; }, 100);
+    } else { mainConnRef.current = null; }
 
     isMatchmakerRef.current = false;
-    
     setPartnerTyping(false);
     setPartnerRecording(false);
     setPartnerPeerId(null);
     setPartnerProfile(null);
     setRemoteVanishMode(null);
     
-    // Update presence to 'idle'
     if (channelRef.current && myPeerIdRef.current) {
-       channelRef.current.track({
-          peerId: myPeerIdRef.current,
-          status: 'idle',
-          timestamp: Date.now(),
-          profile: userProfile! 
-       });
+       channelRef.current.track({ peerId: myPeerIdRef.current, status: 'idle', timestamp: Date.now(), profile: userProfile! });
     }
-    
     setStatus(ChatMode.DISCONNECTED);
   }, [userProfile]);
 
-
-  // --- DATA HANDLING ---
   const handleIncomingData = useCallback((data: PeerData, conn: DataConnection) => {
     const isMain = conn === mainConnRef.current;
 
     if (data.type === 'message') {
       const msgId = data.id || Date.now().toString();
       const newMessage: Message = {
-        id: msgId,
-        sender: 'stranger',
-        timestamp: Date.now(),
-        type: data.dataType || 'text',
-        reactions: [],
+        id: msgId, sender: 'stranger', timestamp: Date.now(), type: data.dataType || 'text', reactions: [],
         text: (data.dataType !== 'image' && data.dataType !== 'audio') ? data.payload : undefined,
         fileData: (data.dataType === 'image' || data.dataType === 'audio') ? data.payload : undefined,
         status: 'sent'
@@ -377,9 +313,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
       }
     }
     else if (data.type === 'seen') {
-       if (isMain) {
-         setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, status: 'seen' } : m));
-       }
+       if (isMain) setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, status: 'seen' } : m));
     }
     else if (data.type === 'typing') {
       if (isMain) setPartnerTyping(data.payload);
@@ -408,9 +342,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
          return currFriends;
       });
     }
-    else if (data.type === 'friend_accept') {
-      saveFriend(data.payload, conn.peer);
-    }
+    else if (data.type === 'friend_accept') saveFriend(data.payload, conn.peer);
     else if (data.type === 'disconnect') {
       if (isMain) {
          setStatus(ChatMode.DISCONNECTED);
@@ -420,43 +352,26 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
          mainConnRef.current = null;
       } else {
          directConnsRef.current.delete(conn.peer);
-         setActiveDirectConnections(prev => {
-            const next = new Set(prev);
-            next.delete(conn.peer);
-            return next;
-         });
+         setActiveDirectConnections(prev => { const next = new Set(prev); next.delete(conn.peer); return next; });
       }
     }
     else if (data.type === 'vanish_mode' && isMain) setRemoteVanishMode(data.payload);
     else if (data.type === 'reaction' && data.messageId) {
-       // Support both main and direct reactions
        setIncomingReaction({ peerId: conn.peer, messageId: data.messageId, emoji: data.payload, sender: 'stranger' });
-       if (isMain) {
-          setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, reactions: [...(m.reactions||[]), {emoji:data.payload, sender:'stranger'}] } : m));
-       }
+       if (isMain) setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, reactions: [...(m.reactions||[]), {emoji:data.payload, sender:'stranger'}] } : m));
     }
     else if (data.type === 'edit_message' && isMain) {
        setMessages(prev => prev.map(m => (m.sender==='stranger' && m.type==='text' && (!data.messageId || m.id === data.messageId)) ? {...m, text:data.payload, isEdited:true} : m));
     }
-
   }, [saveFriend, saveToRecent, userProfile]);
 
-
-  // --- SETUP CONNECTION ---
   const setupConnection = useCallback((conn: DataConnection, metadata: ConnectionMetadata) => {
     if (metadata?.type === 'random') {
       mainConnRef.current = conn;
       setPartnerPeerId(conn.peer);
       isMatchmakerRef.current = false;
-      
-      // Update status to busy
       if (channelRef.current && myPeerIdRef.current) {
-         channelRef.current.track({
-            peerId: myPeerIdRef.current,
-            status: 'busy',
-            timestamp: Date.now(),
-            profile: userProfile!
-         });
+         channelRef.current.track({ peerId: myPeerIdRef.current, status: 'busy', timestamp: Date.now(), profile: userProfile! });
       }
     } else {
       directConnsRef.current.set(conn.peer, conn);
@@ -469,9 +384,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
           setMessages([INITIAL_GREETING]);
           setError(null);
        }
-       if (userProfile) {
-          conn.send({ type: 'profile', payload: userProfile });
-       }
+       if (userProfile) conn.send({ type: 'profile', payload: userProfile });
     });
 
     conn.on('data', (data: any) => handleIncomingData(data, conn));
@@ -483,54 +396,33 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
           setPartnerPeerId(null);
        } else {
           directConnsRef.current.delete(conn.peer);
-          setActiveDirectConnections(prev => {
-             const next = new Set(prev);
-             next.delete(conn.peer);
-             return next;
-          });
+          setActiveDirectConnections(prev => { const next = new Set(prev); next.delete(conn.peer); return next; });
        }
     });
 
     conn.on('error', (err) => {
-       console.error("Conn error", err);
-       if (conn === mainConnRef.current) {
-          // If error during setup, reset
-          if (status === ChatMode.SEARCHING) {
-             isMatchmakerRef.current = false;
-             mainConnRef.current = null;
-          }
+       if (conn === mainConnRef.current && status === ChatMode.SEARCHING) {
+          isMatchmakerRef.current = false;
+          mainConnRef.current = null;
        }
     });
-
   }, [handleIncomingData, status, userProfile]);
 
-
-  // --- PUBLIC ACTIONS ---
+  // --- ACTIONS ---
   
   const connect = useCallback(() => {
-    // To start a chat, we just update our presence status to 'waiting'
     if (channelRef.current && myPeerIdRef.current) {
        setStatus(ChatMode.SEARCHING);
        setMessages([]);
        setError(null);
-       channelRef.current.track({
-         peerId: myPeerIdRef.current,
-         status: 'waiting',
-         timestamp: Date.now(),
-         profile: userProfile!
-       });
-    } else {
-      setError("Connection lost. Please refresh.");
-    }
+       channelRef.current.track({ peerId: myPeerIdRef.current, status: 'waiting', timestamp: Date.now(), profile: userProfile! });
+    } else { setError("Connection lost. Please refresh."); }
   }, [userProfile]);
 
-  const disconnect = useCallback(() => {
-    cleanupMain();
-    setMessages([]); 
-  }, [cleanupMain]);
+  const disconnect = useCallback(() => { cleanupMain(); setMessages([]); }, [cleanupMain]);
 
   const sendMessage = useCallback((text: string) => {
-     if (mainConnRef.current && mainConnRef.current.open) {
+     if (mainConnRef.current?.open) {
         const id = Date.now().toString() + Math.random();
         mainConnRef.current.send({ type: 'message', payload: text, dataType: 'text', id });
         setMessages(p => [...p, { id, text, type:'text', sender:'me', timestamp: Date.now(), reactions:[], status:'sent' }]);
@@ -563,35 +455,20 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      setMessages(p => p.map(m => m.id===msgId ? {...m, text, isEdited:true} : m));
   }, []);
   
-  const sendTyping = useCallback((typing: boolean) => {
-     if (mainConnRef.current?.open) mainConnRef.current.send({ type:'typing', payload:typing });
-  }, []);
-  
-  const sendRecording = useCallback((rec: boolean) => {
-     if (mainConnRef.current?.open) mainConnRef.current.send({ type:'recording', payload:rec });
-  }, []);
-  
-  const sendVanishMode = useCallback((val: boolean) => {
-     if (mainConnRef.current?.open) mainConnRef.current.send({ type:'vanish_mode', payload:val });
-  }, []);
+  const sendTyping = useCallback((typing: boolean) => { if (mainConnRef.current?.open) mainConnRef.current.send({ type:'typing', payload:typing }); }, []);
+  const sendRecording = useCallback((rec: boolean) => { if (mainConnRef.current?.open) mainConnRef.current.send({ type:'recording', payload:rec }); }, []);
+  const sendVanishMode = useCallback((val: boolean) => { if (mainConnRef.current?.open) mainConnRef.current.send({ type:'vanish_mode', payload:val }); }, []);
+  const sendFriendRequest = useCallback(() => { if (mainConnRef.current?.open && userProfile) mainConnRef.current.send({ type:'friend_request', payload:userProfile }); }, [userProfile]);
 
-  const sendFriendRequest = useCallback(() => {
-     if (mainConnRef.current?.open && userProfile) mainConnRef.current.send({ type:'friend_request', payload:userProfile });
-  }, [userProfile]);
-
-  // --- OFFLINE/DIRECT MESSAGING WRAPPERS ---
-
+  // --- OFFLINE/DIRECT MESSAGING ---
   const sendDirectMessage = useCallback(async (peerId: string, text: string, id?: string) => {
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
-     
-     // Check if peer is actually online via lobby
      const isOnline = onlineUsers.some(u => u.peerId === peerId);
-     
      let sentViaP2P = false;
      
-     // Only try P2P if they are online AND we have an open connection
-     if (isOnline && conn?.open) {
+     // STRICT P2P CHECK
+     if (isOnline && conn && conn.open) {
         try {
            conn.send({ type:'message', payload:text, dataType:'text', id: msgId });
            sentViaP2P = true;
@@ -600,14 +477,10 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
         }
      }
      
+     // Fallback to DB if P2P unavailable OR failed
      if (!sentViaP2P && myPeerIdRef.current) {
-        console.log("Sending offline message via DB to", peerId);
         await sendOfflineMessage(myPeerIdRef.current, peerId, {
-          id: msgId,
-          text,
-          type: 'text',
-          sender: 'me',
-          timestamp: Date.now()
+          id: msgId, text, type: 'text', sender: 'me', timestamp: Date.now()
         });
      }
   }, [onlineUsers]);
@@ -616,23 +489,12 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
      const isOnline = onlineUsers.some(u => u.peerId === peerId);
-
      let sentViaP2P = false;
-     if (isOnline && conn?.open) {
-       try {
-          conn.send({ type:'message', payload:b64, dataType:'image', id: msgId });
-          sentViaP2P = true;
-       } catch (e) {}
+     if (isOnline && conn && conn.open) {
+       try { conn.send({ type:'message', payload:b64, dataType:'image', id: msgId }); sentViaP2P = true; } catch (e) {}
      }
-     
      if (!sentViaP2P && myPeerIdRef.current) {
-         await sendOfflineMessage(myPeerIdRef.current, peerId, {
-           id: msgId,
-           fileData: b64,
-           type: 'image',
-           sender: 'me',
-           timestamp: Date.now()
-         });
+         await sendOfflineMessage(myPeerIdRef.current, peerId, { id: msgId, fileData: b64, type: 'image', sender: 'me', timestamp: Date.now() });
      }
   }, [onlineUsers]);
   
@@ -640,23 +502,12 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
      const isOnline = onlineUsers.some(u => u.peerId === peerId);
-
      let sentViaP2P = false;
-     if (isOnline && conn?.open) {
-        try {
-           conn.send({ type:'message', payload:b64, dataType:'audio', id: msgId });
-           sentViaP2P = true;
-        } catch (e) {}
+     if (isOnline && conn && conn.open) {
+        try { conn.send({ type:'message', payload:b64, dataType:'audio', id: msgId }); sentViaP2P = true; } catch (e) {}
      } 
-     
      if (!sentViaP2P && myPeerIdRef.current) {
-         await sendOfflineMessage(myPeerIdRef.current, peerId, {
-           id: msgId,
-           fileData: b64,
-           type: 'audio',
-           sender: 'me',
-           timestamp: Date.now()
-         });
+         await sendOfflineMessage(myPeerIdRef.current, peerId, { id: msgId, fileData: b64, type: 'audio', sender: 'me', timestamp: Date.now() });
      }
   }, [onlineUsers]);
   
@@ -678,10 +529,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      } else {
         const tempConn = peerRef.current?.connect(peerId, { reliable: true, metadata: { type: 'direct' } });
         if (tempConn) {
-           tempConn.on('open', () => {
-              tempConn.send({ type: 'friend_request', payload: userProfile });
-              setupConnection(tempConn, { type: 'direct' });
-           });
+           tempConn.on('open', () => { tempConn.send({ type: 'friend_request', payload: userProfile }); setupConnection(tempConn, { type: 'direct' }); });
         }
      }
   }, [userProfile, setupConnection]);
@@ -699,29 +547,15 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      if (target && userProfile) {
         saveFriend(target.profile, target.peerId);
         const conn = directConnsRef.current.get(target.peerId) || mainConnRef.current;
-        if (conn?.open && (conn.peer === target.peerId)) {
-           conn.send({ type: 'friend_accept', payload: userProfile });
-        } else {
-           const temp = peerRef.current?.connect(target.peerId);
-           temp?.on('open', () => {
-              temp.send({ type: 'friend_accept', payload: userProfile });
-           });
-        }
+        if (conn?.open && (conn.peer === target.peerId)) { conn.send({ type: 'friend_accept', payload: userProfile }); } 
+        else { const temp = peerRef.current?.connect(target.peerId); temp?.on('open', () => temp.send({ type: 'friend_accept', payload: userProfile })); }
         setFriendRequests(p => p.filter(r => r.peerId !== target.peerId));
      }
   }, [friendRequests, userProfile, saveFriend]);
 
-  const rejectFriendRequest = useCallback((peerId: string) => {
-     setFriendRequests(p => p.filter(r => r.peerId !== peerId));
-  }, []);
-
-  const updateMyProfile = useCallback((newP: UserProfile) => {
-     // implementation for profile update broadcast...
-  }, []);
-
-  const isPeerConnected = useCallback((peerId: string) => {
-     return activeDirectConnections.has(peerId);
-  }, [activeDirectConnections]);
+  const rejectFriendRequest = useCallback((peerId: string) => { setFriendRequests(p => p.filter(r => r.peerId !== peerId)); }, []);
+  const updateMyProfile = useCallback((newP: UserProfile) => {}, []);
+  const isPeerConnected = useCallback((peerId: string) => activeDirectConnections.has(peerId), [activeDirectConnections]);
 
   useEffect(() => {
      const handleUnload = () => {
