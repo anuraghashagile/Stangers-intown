@@ -121,7 +121,8 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
     const checkOffline = async () => {
       const messages = await fetchOfflineMessages(myPeerId);
       if (messages && messages.length > 0) {
-        messages.forEach(async (msg: any) => {
+        // SEQUENTIAL PROCESSING with delay to ensure React state updates are captured
+        for (const msg of messages) {
            const reconstructed: Message = {
              id: msg.message_id,
              text: msg.content,
@@ -134,7 +135,9 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
            // Inject into direct message flow
            setIncomingDirectMessage({ peerId: msg.sender_id, message: reconstructed });
            await markMessageAsRead(msg.message_id);
-        });
+           // Crucial delay to prevent batching
+           await new Promise(r => setTimeout(r, 100));
+        }
       }
     };
 
@@ -576,19 +579,24 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
      
+     let sentViaP2P = false;
      if (conn?.open) {
-        conn.send({ type:'message', payload:text, dataType:'text', id: msgId });
-     } else {
-        // Fallback to Supabase Database for offline messaging
-        if (myPeerIdRef.current) {
-           await sendOfflineMessage(myPeerIdRef.current, peerId, {
-             id: msgId,
-             text,
-             type: 'text',
-             sender: 'me',
-             timestamp: Date.now()
-           });
+        try {
+           conn.send({ type:'message', payload:text, dataType:'text', id: msgId });
+           sentViaP2P = true;
+        } catch (e) {
+           console.warn("P2P send failed, falling back to DB");
         }
+     }
+     
+     if (!sentViaP2P && myPeerIdRef.current) {
+        await sendOfflineMessage(myPeerIdRef.current, peerId, {
+          id: msgId,
+          text,
+          type: 'text',
+          sender: 'me',
+          timestamp: Date.now()
+        });
      }
   }, []);
   
@@ -596,10 +604,15 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
      
+     let sentViaP2P = false;
      if (conn?.open) {
-        conn.send({ type:'message', payload:b64, dataType:'image', id: msgId });
-     } else {
-       if (myPeerIdRef.current) {
+       try {
+          conn.send({ type:'message', payload:b64, dataType:'image', id: msgId });
+          sentViaP2P = true;
+       } catch (e) {}
+     }
+     
+     if (!sentViaP2P && myPeerIdRef.current) {
          await sendOfflineMessage(myPeerIdRef.current, peerId, {
            id: msgId,
            fileData: b64,
@@ -607,7 +620,6 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
            sender: 'me',
            timestamp: Date.now()
          });
-       }
      }
   }, []);
   
@@ -615,10 +627,15 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
 
+     let sentViaP2P = false;
      if (conn?.open) {
-        conn.send({ type:'message', payload:b64, dataType:'audio', id: msgId });
-     } else {
-       if (myPeerIdRef.current) {
+        try {
+           conn.send({ type:'message', payload:b64, dataType:'audio', id: msgId });
+           sentViaP2P = true;
+        } catch (e) {}
+     } 
+     
+     if (!sentViaP2P && myPeerIdRef.current) {
          await sendOfflineMessage(myPeerIdRef.current, peerId, {
            id: msgId,
            fileData: b64,
@@ -626,7 +643,6 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
            sender: 'me',
            timestamp: Date.now()
          });
-       }
      }
   }, []);
   

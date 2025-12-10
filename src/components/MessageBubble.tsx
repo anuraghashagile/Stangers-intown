@@ -13,7 +13,7 @@ interface MessageBubbleProps {
 
 const PRESET_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 
-const AudioPlayer = ({ src }: { src: string }) => {
+const AudioPlayer = ({ src, isMe }: { src: string, isMe: boolean }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -65,41 +65,46 @@ const AudioPlayer = ({ src }: { src: string }) => {
       <audio ref={audioRef} src={src} />
       <button 
         onClick={togglePlay}
-        className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 shrink-0"
+        className={clsx(
+          "w-10 h-10 flex items-center justify-center rounded-full shrink-0 transition-colors",
+          isMe ? "bg-white text-brand-600 hover:bg-slate-100" : "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
+        )}
       >
-        {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+        {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
       </button>
       
-      <div className="flex flex-col flex-1 gap-1">
-         {/* Fake Waveform Animation */}
-         <div className="flex items-center gap-0.5 h-6">
-            {[...Array(20)].map((_, i) => (
+      <div className="flex flex-col flex-1 gap-1.5">
+         {/* Waveform Animation */}
+         <div className="flex items-end gap-[2px] h-8 cursor-pointer" onClick={togglePlay}>
+            {[...Array(24)].map((_, i) => (
                <div 
                  key={i} 
                  className={clsx(
-                   "w-1 rounded-full bg-slate-400 dark:bg-slate-500",
-                   isPlaying ? "animate-wave" : "h-1"
+                   "w-1 rounded-full transition-all duration-300",
+                   isPlaying ? "animate-wave" : "h-2",
+                   isMe ? "bg-white/70" : "bg-slate-400 dark:bg-slate-500",
+                   i % 2 === 0 ? "h-3" : "h-5" // varied initial heights
                  )}
                  style={{
-                    height: isPlaying ? undefined : (3 + Math.random() * 12) + 'px',
-                    animationDelay: `${i * 0.05}s`,
-                    opacity: (i / 20) * (currentTime / duration) > (i/20) ? 1 : 0.5 // Progress simulation
+                    height: isPlaying ? undefined : (4 + Math.random() * 16) + 'px',
+                    animationDelay: `${i * 0.04}s`,
+                    opacity: (i / 24) * (currentTime / duration) > (i/24) ? 1 : 0.4 // Progress simulation
                  }}
                />
             ))}
          </div>
-         <div className="text-[10px] text-slate-500 font-mono">
+         <div className={clsx("text-[10px] font-mono font-medium", isMe ? "text-brand-100" : "text-slate-500")}>
             {formatTime(currentTime)} / {formatTime(duration || 0)}
          </div>
       </div>
       
       <style>{`
         @keyframes wave {
-          0%, 100% { height: 4px; }
-          50% { height: 16px; }
+          0%, 100% { height: 6px; }
+          50% { height: 24px; }
         }
         .animate-wave {
-          animation: wave 1s ease-in-out infinite;
+          animation: wave 0.8s ease-in-out infinite;
         }
       `}</style>
     </div>
@@ -261,7 +266,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             )}
 
             {message.type === 'audio' && message.fileData && (
-              <AudioPlayer src={message.fileData} />
+              <AudioPlayer src={message.fileData} isMe={isMe} />
             )}
 
             {/* Reactions Display */}

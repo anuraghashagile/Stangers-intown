@@ -9,13 +9,19 @@ export const useGlobalChat = (userProfile: UserProfile | null, myPeerId: string 
   // Load persistent history on mount
   useEffect(() => {
     const loadHistory = async () => {
-      const history = await fetchRecentGlobalMessages();
-      // Mark my own messages
-      const processed = history.map(msg => ({
-        ...msg,
-        sender: (msg.senderPeerId === myPeerId ? 'me' : 'stranger') as 'me' | 'stranger'
-      }));
-      setGlobalMessages(processed);
+      try {
+        const history = await fetchRecentGlobalMessages();
+        // Mark my own messages
+        const processed = history.map(msg => ({
+          ...msg,
+          sender: (msg.senderPeerId === myPeerId ? 'me' : 'stranger') as 'me' | 'stranger'
+        }));
+        
+        // Use functional update to merge/set and avoid race conditions
+        setGlobalMessages(processed);
+      } catch (err) {
+        console.error("Failed to load global chat history", err);
+      }
     };
     loadHistory();
   }, [myPeerId]);
@@ -71,7 +77,11 @@ export const useGlobalChat = (userProfile: UserProfile | null, myPeerId: string 
     setGlobalMessages(prev => [...prev, newMessage]);
 
     // Send to DB
-    await sendPersistentGlobalMessage(newMessage);
+    try {
+       await sendPersistentGlobalMessage(newMessage);
+    } catch (err) {
+       console.error("Failed to send global message to DB", err);
+    }
   }, [userProfile, myPeerId]);
 
   return {

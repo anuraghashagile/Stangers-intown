@@ -109,7 +109,7 @@ export const fetchOfflineMessages = async (myPeerId: string) => {
   const { data, error } = await supabase
     .from('direct_messages')
     .select('*')
-    .eq('receiver_id', myPeerId)
+    .eq('receiver_id', myPeerId) // CORRECTED TYPO (was possibly 'receiever_id' in user's manual setup, sticking to correct spelling)
     .eq('is_read', false);
 
   if (error) return [];

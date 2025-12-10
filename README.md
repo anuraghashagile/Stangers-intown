@@ -26,4 +26,4 @@ You only need to set `API_KEY` (Google Gemini API) in your Vercel project settin
 - **Supabase Realtime** (Signaling/Lobby)
 - **PeerJS** (WebRTC P2P Data)
 - **TailwindCSS** (Styling)
-
+- **Google Gemini** (AI Persona)
