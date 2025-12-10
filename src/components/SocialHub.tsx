@@ -125,6 +125,10 @@ export const SocialHub: React.FC<SocialHubProps> = ({
       if (storedRecents) setRecentPeers(JSON.parse(storedRecents));
       const storedFriends = localStorage.getItem('chat_friends');
       if (storedFriends) setFriends(JSON.parse(storedFriends));
+      
+      // Load persistent unread counts
+      const storedUnreads = localStorage.getItem('chat_unread_counts');
+      if (storedUnreads) setUnreadCounts(JSON.parse(storedUnreads));
     } catch(e) {}
   }, []);
 
@@ -143,7 +147,14 @@ export const SocialHub: React.FC<SocialHubProps> = ({
       const storageKey = `chat_history_${activePeer.id}`;
       const savedParams = localStorage.getItem(storageKey);
       try { setLocalChatHistory(savedParams ? JSON.parse(savedParams) : []); } catch (e) { setLocalChatHistory([]); }
-      setUnreadCounts(prev => { const n = { ...prev }; delete n[activePeer.id]; return n; });
+      
+      // Clear unread count for this peer when chat opens
+      setUnreadCounts(prev => { 
+        const n = { ...prev }; 
+        delete n[activePeer.id]; 
+        localStorage.setItem('chat_unread_counts', JSON.stringify(n));
+        return n; 
+      });
     }
   }, [activePeer]);
 
@@ -156,8 +167,16 @@ export const SocialHub: React.FC<SocialHubProps> = ({
       if (!history.some(m => m.id === message.id)) {
         history.push(message);
         localStorage.setItem(storageKey, JSON.stringify(history));
-        if (activePeer?.id === peerId) setLocalChatHistory(history);
-        else setUnreadCounts(prev => ({ ...prev, [peerId]: (prev[peerId] || 0) + 1 }));
+        
+        if (activePeer?.id === peerId) {
+          setLocalChatHistory(history);
+        } else {
+          setUnreadCounts(prev => {
+             const newCounts = { ...prev, [peerId]: (prev[peerId] || 0) + 1 };
+             localStorage.setItem('chat_unread_counts', JSON.stringify(newCounts));
+             return newCounts;
+          });
+        }
       }
     }
   }, [incomingDirectMessage, activePeer]);
@@ -317,7 +336,13 @@ export const SocialHub: React.FC<SocialHubProps> = ({
     if (profile) {
       setActivePeer({ id: peerId, profile });
       onCallPeer(peerId, profile);
-      setUnreadCounts(prev => { const n = { ...prev }; delete n[peerId]; return n; });
+      // Clear unread count for this peer
+      setUnreadCounts(prev => { 
+        const n = { ...prev }; 
+        delete n[peerId]; 
+        localStorage.setItem('chat_unread_counts', JSON.stringify(n));
+        return n; 
+      });
       setViewingProfile(null);
     }
   };
@@ -367,7 +392,7 @@ export const SocialHub: React.FC<SocialHubProps> = ({
     >
       <Users size={triggerTarget ? 22 : 26} strokeWidth={2.5} />
       {getTotalUnreadCount() > 0 && (
-        <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full border-2 border-white dark:border-slate-900 flex items-center justify-center text-[10px] font-bold animate-pulse shadow-sm">
+        <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full border-2 border-white dark:border-slate-900 flex items-center justify-center text-[10px] font-bold animate-pulse shadow-sm z-[70]">
           {getTotalUnreadCount() > 9 ? '9+' : getTotalUnreadCount()}
         </span>
       )}

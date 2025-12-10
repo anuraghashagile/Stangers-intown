@@ -133,14 +133,15 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
       if (messages && messages.length > 0) {
         for (const msg of messages) {
            await processOfflineMessage(msg);
-           // INCREASED DELAY to prevent state batching issues in React
-           await new Promise(r => setTimeout(r, 200));
+           // Delay to ensure React updates state properly
+           await new Promise(r => setTimeout(r, 100));
         }
       }
     };
 
     checkOffline();
-    const interval = setInterval(checkOffline, 15000); // Check every 15s
+    // Poll more frequently to ensure quick delivery (5s)
+    const interval = setInterval(checkOffline, 5000); 
 
     const sub = supabase.channel(`offline-${myPeerId}`)
       .on(
@@ -464,10 +465,13 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
   const sendDirectMessage = useCallback(async (peerId: string, text: string, id?: string) => {
      const conn = directConnsRef.current.get(peerId);
      const msgId = id || Date.now().toString();
+     
+     // Check if user is REALLY online in our lobby presence list
      const isOnline = onlineUsers.some(u => u.peerId === peerId);
+     
      let sentViaP2P = false;
      
-     // STRICT P2P CHECK
+     // STRICT P2P CHECK: Must be in lobby AND have active connection
      if (isOnline && conn && conn.open) {
         try {
            conn.send({ type:'message', payload:text, dataType:'text', id: msgId });
@@ -479,6 +483,7 @@ export const useHumanChat = (userProfile: UserProfile | null, persistentId?: str
      
      // Fallback to DB if P2P unavailable OR failed
      if (!sentViaP2P && myPeerIdRef.current) {
+        // console.log("Sending offline message via DB");
         await sendOfflineMessage(myPeerIdRef.current, peerId, {
           id: msgId, text, type: 'text', sender: 'me', timestamp: Date.now()
         });
